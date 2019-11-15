@@ -1,0 +1,3 @@
+[flake8]
+ignore = E,W  # let yapf handle stylistic issues
+show-source = True
