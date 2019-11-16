@@ -15,6 +15,8 @@
 
 __version__ = '0.0.0'
 
+from typing import Mapping
+
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from torch import LongTensor, Tensor
@@ -32,6 +34,7 @@ class DiscRNNG(nn.Module):
             word_embedding: nn.Embedding,
             nt_embedding: nn.Embedding,
             action_embedding: nn.Embedding,
+            action2nt: Mapping[int, int],
             *,
             stack_size: int = 128,
             n_layers: int = 2,
@@ -42,19 +45,21 @@ class DiscRNNG(nn.Module):
             dropout: float = 0.5,
     ) -> None:
         super().__init__()
+        self.action2nt = action2nt
         self.word_embedder = nn.Sequential(
             word_embedding,
-            Rearrange('bsz slen wdim -> slen bsz wdim'),
+            Rearrange('bsz slen wdim -> slen bsz wdim'),  # TODO fix this
             nn.Dropout2d(word_dropout),
         )
         self.nt_embedder = nn.Sequential(
+            Rearrange('n -> () n'),
             nt_embedding,
-            Rearrange('bsz ntlen ntdim -> ntlen bsz ntdim'),
-            nn.Dropout2d(nt_dropout),
+            nn.Dropout2d(nt_dropout),  # drop some NTs entirely
+            Rearrange('d n dim -> (d n) dim'),  # d==1
         )
         self.action_embedder = nn.Sequential(
             action_embedding,
-            Rearrange('bsz alen adim -> alen bsz adim'),
+            Rearrange('bsz alen adim -> alen bsz adim'),  # TODO fix this
             nn.Dropout2d(action_dropout),
         )
         self.buffer2stack_proj = nn.Linear(word_embedding.embedding_dim, stack_size)
@@ -89,11 +94,9 @@ class DiscRNNG(nn.Module):
         for p in [self.buffer_guard, self.history_guard, self.stack_guard]:
             nn.init.uniform_(p, -0.01, 0.01)
 
-    def forward(self, words: LongTensor, nonterms: LongTensor, actions: LongTensor) -> Tensor:
+    def forward(self, words: LongTensor, actions: LongTensor) -> Tensor:
         # shape: (slen, bsz, wdim)
         winputs = self.word_embedder(words)
-        # shape: (ntlen, bsz, ntdim)
-        ntinputs = self.nt_embedder(nonterms)
         # shape: (alen, bsz, adim)
         ainputs = self.action_embedder(actions)
 
@@ -102,10 +105,6 @@ class DiscRNNG(nn.Module):
         # shape: (slen, bsz, hdim)
         buff_encoded, _ = self.buffer_encoder(buff)  # precompute encoding
         buff_len = buff.size(0)
-
-        # Init NT buffer
-        ntbuff = ntinputs.flip([0])  # reverse sequence
-        ntbuff_len = ntbuff.size(0)
 
         # Init action history
         # shape: (alen, bsz, hdim)
@@ -193,13 +192,16 @@ class DiscRNNG(nn.Module):
                 stack_open_nt.append(False)
                 buff_len -= 1
             else:
+                # shape: (bsz,)
+                inputs = torch.empty_like(a)
+                for i in range(bsz):
+                    inputs[i] = self.action2nt[a[i].item()]
                 # shape: (bsz, ntdim)
-                inputs = ntbuff[ntbuff_len - 1]
+                outputs = self.nt_embedder(inputs)
                 # shape: (bsz, sdim)
-                outputs = self.nt2stack_proj(inputs)
+                outputs = self.nt2stack_proj(outputs)
                 stack.append(outputs)
                 stack_open_nt.append(True)
-                ntbuff_len -= 1
 
             hist_len += 1
 
