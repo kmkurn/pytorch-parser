@@ -38,22 +38,25 @@ class DiscRNNG(nn.Module):
             stack_size: int = 128,
             n_layers: int = 2,
             hidden_size: int = 128,
+            word_dropout: float = 0.5,
+            nt_dropout: float = 0.2,
+            action_dropout: float = 0.3,
     ) -> None:
         super().__init__()
         self.word_embedder = nn.Sequential(
             word_embedding,
             Rearrange('bsz slen wdim -> slen bsz wdim'),
-            nn.Dropout2d(0.5),
+            nn.Dropout2d(word_dropout),
         )
         self.nt_embedder = nn.Sequential(
             nt_embedding,
             Rearrange('bsz ntlen ntdim -> ntlen bsz ntdim'),
-            nn.Dropout2d(0.2),
+            nn.Dropout2d(nt_dropout),
         )
         self.action_embedder = nn.Sequential(
             action_embedding,
             Rearrange('bsz alen adim -> alen bsz adim'),
-            nn.Dropout2d(0.5),
+            nn.Dropout2d(action_dropout),
         )
         self.buffer2stack_proj = nn.Linear(word_embedding.embedding_dim, stack_size)
         self.nt2stack_proj = nn.Linear(nt_embedding.embedding_dim, stack_size)
