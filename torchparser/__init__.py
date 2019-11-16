@@ -27,42 +27,43 @@ import torch.nn.functional as F
 class DiscRNNG(nn.Module):
     REDUCE = 0
     SHIFT = 1
-    STACK_DIM = 128
-    HIDDEN_DIM = 128
 
     def __init__(
             self,
             word_embedder: nn.Embedding,
             nt_embedder: nn.Embedding,
             action_embedder: nn.Embedding,
+            stack_size: int = 128,
+            n_layers: int = 2,
+            hidden_size: int = 128,
     ) -> None:
         super().__init__()
         self.word_embedder = word_embedder
         self.nt_embedder = nt_embedder
         self.action_embedder = action_embedder
-        self.buffer2stack_proj = nn.Linear(word_embedder.embedding_dim, self.STACK_DIM)
-        self.nt2stack_proj = nn.Linear(nt_embedder.embedding_dim, self.STACK_DIM)
+        self.buffer2stack_proj = nn.Linear(word_embedder.embedding_dim, stack_size)
+        self.nt2stack_proj = nn.Linear(nt_embedder.embedding_dim, stack_size)
         self.subtree_encoders = nn.ModuleList([
-            nn.LSTM(self.STACK_DIM, self.STACK_DIM, num_layers=2),
-            nn.LSTM(self.STACK_DIM, self.STACK_DIM, num_layers=2)
+            nn.LSTM(stack_size, stack_size, num_layers=n_layers),
+            nn.LSTM(stack_size, stack_size, num_layers=n_layers)
         ])
         self.subtree_proj = nn.Sequential(
-            nn.Linear(2 * self.STACK_DIM, self.STACK_DIM),
+            nn.Linear(2 * stack_size, stack_size),
             nn.ReLU(),
-            nn.Linear(self.STACK_DIM, self.STACK_DIM),
+            nn.Linear(stack_size, stack_size),
         )
-        self.buffer_guard = nn.Parameter(torch.empty(self.HIDDEN_DIM))
+        self.buffer_guard = nn.Parameter(torch.empty(hidden_size))
         self.buffer_encoder = nn.LSTM(
-            word_embedder.embedding_dim, self.HIDDEN_DIM, num_layers=2)
-        self.history_guard = nn.Parameter(torch.empty(self.HIDDEN_DIM))
+            word_embedder.embedding_dim, hidden_size, num_layers=n_layers)
+        self.history_guard = nn.Parameter(torch.empty(hidden_size))
         self.history_encoder = nn.LSTM(
-            action_embedder.embedding_dim, self.HIDDEN_DIM, num_layers=2)
-        self.stack_guard = nn.Parameter(torch.empty(self.HIDDEN_DIM))
-        self.stack_encoder = nn.LSTM(self.STACK_DIM, self.HIDDEN_DIM, num_layers=2)
+            action_embedder.embedding_dim, hidden_size, num_layers=n_layers)
+        self.stack_guard = nn.Parameter(torch.empty(hidden_size))
+        self.stack_encoder = nn.LSTM(stack_size, hidden_size, num_layers=n_layers)
         self.action_proj = nn.Sequential(
-            nn.Linear(3 * self.HIDDEN_DIM, self.HIDDEN_DIM),
+            nn.Linear(3 * hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(self.HIDDEN_DIM, action_embedder.num_embeddings),
+            nn.Linear(hidden_size, action_embedder.num_embeddings),
         )
         self.reset_parameters()
 
