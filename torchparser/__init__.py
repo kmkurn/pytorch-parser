@@ -48,8 +48,7 @@ class DiscRNNG(nn.Module):
         self.action2nt = action2nt
         self.word_embedder = nn.Sequential(
             word_embedding,
-            Rearrange('bsz slen wdim -> slen bsz wdim'),  # TODO fix this
-            nn.Dropout2d(word_dropout),
+            nn.Dropout2d(word_dropout),  # drop some words entirely
         )
         self.nt_embedder = nn.Sequential(
             Rearrange('n -> () n'),
@@ -59,8 +58,7 @@ class DiscRNNG(nn.Module):
         )
         self.action_embedder = nn.Sequential(
             action_embedding,
-            Rearrange('bsz alen adim -> alen bsz adim'),  # TODO fix this
-            nn.Dropout2d(action_dropout),
+            nn.Dropout2d(action_dropout),  # drop some actions entirely
         )
         self.buffer2stack_proj = nn.Linear(word_embedding.embedding_dim, stack_size)
         self.nt2stack_proj = nn.Linear(nt_embedding.embedding_dim, stack_size)
@@ -95,10 +93,8 @@ class DiscRNNG(nn.Module):
             nn.init.uniform_(p, -0.01, 0.01)
 
     def forward(self, words: LongTensor, actions: LongTensor) -> Tensor:
-        # shape: (slen, bsz, wdim)
-        winputs = self.word_embedder(words)
-        # shape: (alen, bsz, adim)
-        ainputs = self.action_embedder(actions)
+        winputs = rearrange(self.word_embedder(words), 'bsz slen wdim -> slen bsz wdim')
+        ainputs = rearrange(self.action_embedder(actions), 'bsz alen adim -> alen bsz adim')
 
         # Init word buffer
         buff = winputs.flip([0])  # reverse sequence
