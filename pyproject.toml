@@ -7,7 +7,7 @@ module = "torchparser"
 author = "Kemal Kurniawan"
 author-email = "kemal@kkurniawan.com"
 home-page = "https://github.com/kmkurn/pytorch-parser"
-requires = []
+requires = ["einops ~=0.1.0"]
 requires-python = ">=3.6,<4"
 description-file = "README.rst"
 classifiers = [
