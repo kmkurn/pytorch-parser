@@ -125,19 +125,16 @@ class DiscRNNG(nn.Module):
                 dim = self.stack_guard.size(0)
                 stack_state = self.stack_guard.unsqueeze(0).expand(bsz, dim)
             else:
-                # shape: (len, bsz, sdim)
-                inputs = torch.stack(stack)
+                inputs = rearrange(stack, 'len bsz sdim -> len bsz sdim')
                 # shape: (len, bsz, hdim)
                 outputs, _ = self.stack_encoder(inputs)
                 # shape: (bsz, hdim)
                 stack_state = outputs[-1]
 
             # Compute action scores
-            # shape: (bsz, 3*hdim)
-            parser_state = torch.cat([buff_state, hist_state, stack_state], dim=-1)
-            # shape: (bsz, 3*hdim)
+            parser_state = rearrange([buff_state, hist_state, stack_state],
+                                     'n bsz hdim -> bsz (n hdim)')
             parser_state = self.dropout(parser_state)
-            # shape: (bsz, n_actions)
             scores = self.action_mlp(parser_state)
 
             loss += F.cross_entropy(scores, a)
@@ -157,17 +154,13 @@ class DiscRNNG(nn.Module):
                 inputs_fwd, inputs_bwd = [parent], [parent]
                 inputs_fwd.extend(children)
                 inputs_bwd.extend(reversed(children))
-                # shape: (len, bsz, sdim)
-                inputs_fwd = torch.stack(inputs_fwd)
-                # shape: (len, bsz, sdim)
-                inputs_bwd = torch.stack(inputs_bwd)
+                inputs_fwd = rearrange(inputs_fwd, 'len bsz sdim -> len bsz sdim')
+                inputs_bwd = rearrange(inputs_bwd, 'len bsz sdim -> len bsz sdim')
                 outputs = []
                 for inputs, enc in zip([inputs_fwd, inputs_bwd], self.subtree_encoders):
                     out, _ = enc(inputs)
                     outputs.append(out[-1])
-                # shape: (bsz, 2*sdim)
-                outputs = torch.cat(outputs, dim=-1)
-                # shape: (bsz, sdim)
+                outputs = rearrange(outputs, 'n bsz sdim -> bsz (n sdim)')
                 outputs = self.subtree_mlp(outputs)
 
                 stack.append(outputs)
