@@ -91,12 +91,10 @@ class DiscRNNG(nn.Module):
 
         # Init word buffer
         buff = winputs.flip([0])  # reverse sequence
-        # shape: (slen, bsz, hdim)
         buff_encoded, _ = self.buffer_encoder(buff)  # precompute encoding
         buff_len = buff.size(0)
 
         # Init action history
-        # shape: (alen, bsz, hdim)
         hist_encoded, _ = self.history_encoder(ainputs)  # precompute encoding
         hist_len = 0
 
@@ -126,9 +124,7 @@ class DiscRNNG(nn.Module):
                 stack_state = self.stack_guard.unsqueeze(0).expand(bsz, dim)
             else:
                 inputs = rearrange(stack, 'len bsz sdim -> len bsz sdim')
-                # shape: (len, bsz, hdim)
                 outputs, _ = self.stack_encoder(inputs)
-                # shape: (bsz, hdim)
                 stack_state = outputs[-1]
 
             # Compute action scores
@@ -167,21 +163,16 @@ class DiscRNNG(nn.Module):
                 stack_open_nt.append(False)
             elif a[0].item() == self.SHIFT:
                 assert a.eq(self.SHIFT).all(), 'actions must be SHIFT'
-                # shape: (bsz, wdim)
                 inputs = buff[buff_len - 1]
-                # shape: (bsz, sdim)
                 outputs = self.buffer2stack_proj(inputs)
                 stack.append(outputs)
                 stack_open_nt.append(False)
                 buff_len -= 1
             else:
-                # shape: (bsz,)
                 inputs = torch.empty_like(a)
                 for i in range(bsz):
                     inputs[i] = self.action2nt[a[i].item()]
-                # shape: (bsz, ntdim)
                 inputs = self.nt_dropout(self.nt_embedding(inputs.unsqueeze(0))).squeeze(0)
-                # shape: (bsz, sdim)
                 outputs = self.nt2stack_proj(inputs)
                 stack.append(outputs)
                 stack_open_nt.append(True)
