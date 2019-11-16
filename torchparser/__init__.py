@@ -15,7 +15,7 @@
 
 __version__ = '0.0.0'
 
-from typing import Mapping
+from typing import List, Mapping
 
 from einops import rearrange
 from torch import LongTensor, Tensor
@@ -27,6 +27,7 @@ import torch.nn.functional as F
 class DiscRNNG(nn.Module):
     REDUCE = 0
     SHIFT = 1
+    MAX_OPEN = 100
 
     def __init__(
             self,
@@ -82,6 +83,10 @@ class DiscRNNG(nn.Module):
     def reset_parameters(self) -> None:
         for p in [self.buffer_guard, self.history_guard, self.stack_guard]:
             nn.init.uniform_(p, -0.01, 0.01)
+
+    @property
+    def n_actions(self) -> int:
+        return self.action_embedding.num_embeddings
 
     def forward(self, words: LongTensor, actions: LongTensor) -> Tensor:
         winputs = self.word_dropout(self.word_embedding(words))
@@ -174,7 +179,7 @@ class DiscRNNG(nn.Module):
                 inputs = torch.empty_like(a)
                 for i in range(bsz):
                     inputs[i] = self.action2nt[a[i].item()]
-                inputs = self.nt_dropout(self.nt_embedding(inputs.unsqueeze(0))).squeeze(0)
+                inputs = self.nt_dropout(self.nt_embedding(inputs).unsqueeze(0)).squeeze(0)
                 outputs = self.nt2stack_proj(inputs)
                 stack.append(outputs)
                 stack_open_nt.append(True)
@@ -182,3 +187,129 @@ class DiscRNNG(nn.Module):
             hist_len += 1
 
         return loss
+
+    def decode(self, words: LongTensor) -> List[List[int]]:
+        winputs = self.word_dropout(self.word_embedding(words))
+        winputs = rearrange(winputs, 'bsz slen wdim -> slen bsz wdim')
+        buffs = winputs.flip([0])  # reverse sequence
+        buffs_encoded, _ = self.buffer_encoder(buffs)  # precompute encoding
+
+        def lift(rnn):
+            def lifted(inputs):
+                inputs = inputs.unsqueeze(1)
+                outputs, (hn, cn) = rnn(inputs)
+                outputs = outputs.squeeze(1)
+                hn = hn.squeeze(1)
+                cn = cn.squeeze(1)
+                return outputs, (hn, cn)
+
+            return lifted
+
+        bsz, pred_actions = winputs.size(1), []
+        for b in range(bsz):
+            # Init word buffer
+            buff = buffs[:, b, :]
+            buff_encoded = buffs_encoded[:, b, :]
+            buff_len = buff.size(0)
+
+            # Init action history
+            hist = []
+
+            # Init stack
+            stack = []
+            stack_open_nt = []
+            n_open = 0
+
+            pred_a = []
+            while len(stack) != 1 or buff_len > 0:
+                # Get word buffer state
+                if buff_len <= 0:
+                    buff_state = self.buffer_guard
+                else:
+                    buff_state = buff_encoded[buff_len - 1]
+
+                # Get action history state
+                if not hist:
+                    hist_state = self.history_guard
+                else:
+                    inputs = rearrange(hist, 'len adim -> len adim')
+                    outputs, _ = lift(self.history_encoder)(inputs)
+                    hist_state = outputs[-1]
+
+                # Get stack state
+                if not stack:
+                    stack_state = self.stack_guard
+                else:
+                    inputs = rearrange(stack, 'len sdim -> len sdim')
+                    outputs, _ = lift(self.stack_encoder)(inputs)
+                    stack_state = outputs[-1]
+
+                # Compute action scores
+                parser_state = rearrange([buff_state, hist_state, stack_state],
+                                         'n hdim -> (n hdim)')
+                parser_state = self.dropout(parser_state)
+                scores = self.action_mlp(parser_state)
+
+                # Constrain invalid actions
+                acts = torch.arange(self.n_actions).to(scores.device)
+                nt_mask = (acts != self.SHIFT) & (acts != self.REDUCE)
+                if buff_len <= 0 or n_open >= self.MAX_OPEN:
+                    scores.masked_fill_(nt_mask, float('-inf'))
+                if buff_len <= 0 or n_open < 1:
+                    scores[self.SHIFT] = float('-inf')
+                if stack_open_nt and stack_open_nt[-1]:
+                    scores[self.REDUCE] = float('-inf')
+                if n_open < 2 and buff_len > 0:
+                    scores[self.REDUCE] = float('-inf')
+
+                # Get best action with max score
+                a = scores.argmax()
+                pred_a.append(a.item())
+
+                if a.item() == self.REDUCE:
+                    children = []
+                    while stack_open_nt and not stack_open_nt[-1]:
+                        assert stack
+                        children.append(stack.pop())
+                        stack_open_nt.pop()
+                    assert stack_open_nt, 'cannot REDUCE because no open nonterm'
+                    parent = stack.pop()
+                    stack_open_nt.pop()
+                    n_open -= 1
+
+                    # Encode subtree
+                    inputs_fwd, inputs_bwd = [parent], [parent]
+                    inputs_fwd.extend(children)
+                    inputs_bwd.extend(reversed(children))
+                    inputs_fwd = rearrange(inputs_fwd, 'len sdim -> len sdim')
+                    inputs_bwd = rearrange(inputs_bwd, 'len sdim -> len sdim')
+                    outputs = []
+                    for inputs, enc in zip([inputs_fwd, inputs_bwd], self.subtree_encoders):
+                        out, _ = lift(enc)(inputs)
+                        outputs.append(out[-1])
+                    outputs = rearrange(outputs, 'n sdim -> (n sdim)')
+                    outputs = self.subtree_mlp(outputs)
+
+                    stack.append(outputs)
+                    stack_open_nt.append(False)
+
+                elif a.item() == self.SHIFT:
+                    inputs = buff[buff_len - 1]
+                    outputs = self.buffer2stack_proj(inputs)
+                    stack.append(outputs)
+                    stack_open_nt.append(False)
+                    buff_len -= 1
+
+                else:
+                    inputs = a.new_tensor(self.action2nt[a.item()])
+                    inputs = self.nt_dropout(self.nt_embedding(inputs).view(1, 1, -1)).view(-1)
+                    outputs = self.nt2stack_proj(inputs)
+                    stack.append(outputs)
+                    stack_open_nt.append(True)
+                    n_open += 1
+
+                hist.append(self.action_embedding(a))
+
+            pred_actions.append(pred_a)
+
+        return pred_actions
