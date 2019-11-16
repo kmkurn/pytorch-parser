@@ -86,7 +86,7 @@ class DiscRNNG(nn.Module):
                 self._shift()
             else:
                 self._push_nt()
-            self._hist_sz += 1
+            self._hist_len += 1
 
         return loss
 
@@ -94,15 +94,15 @@ class DiscRNNG(nn.Module):
         self._buff = rearrange(winputs, 'bsz slen wdim -> slen bsz wdim')
         tmp = self._buff.flip([0])  # reverse sequence
         self._buff_encoded, _ = self.buffer_encoder(tmp)  # precompute encoding
-        self._buff_sz = self._buff.size(0)
+        self._buff_len = self._buff.size(0)
 
         self._ntbuff = rearrange(ntinputs, 'bsz ntlen ntdim -> ntlen bsz ntdim')
-        self._ntbuff_sz = self._ntbuff.size(0)
+        self._ntbuff_len = self._ntbuff.size(0)
 
     def _init_hist(self, inputs: Tensor) -> None:
         self._hist = rearrange(inputs, 'bsz alen adim -> alen bsz adim')
         self._hist_encoded, _ = self.history_encoder(self._hist)  # precompute encoding
-        self._hist_sz = 0
+        self._hist_len = 0
 
     def _init_stack(self) -> None:
         self._stack = []
@@ -125,37 +125,37 @@ class DiscRNNG(nn.Module):
 
     def _shift(self) -> None:
         # shape: (bsz, wdim)
-        inputs = self._buff[-self._buff_sz]
+        inputs = self._buff[-self._buff_len]
         # shape: (bsz, sdim)
         outputs = self.buffer2stack_proj(inputs)
 
         self._stack.append(outputs)
         self._stack_open_nt.append(False)
-        self._buff_sz -= 1
+        self._buff_len -= 1
 
     def _push_nt(self) -> None:
         # shape: (bsz, ntdim)
-        inputs = self._ntbuff[-self._ntbuff_sz]
+        inputs = self._ntbuff[-self._ntbuff_len]
         # shape: (bsz, sdim)
         outputs = self.nt2stack_proj(inputs)
 
         self._stack.append(outputs)
         self._stack_open_nt.append(True)
-        self._ntbuff_sz -= 1
+        self._ntbuff_len -= 1
 
     def _encode_buff(self) -> Tensor:
-        if self._buff_sz <= 0:
+        if self._buff_len <= 0:
             bsz, dim = self._buff.size(1), self.buffer_guard.size(0)
             return self.buffer_guard.unsqueeze(0).expand(bsz, dim)
         # shape: (bsz, hdim)
-        return self._buff_encoded[self._buff_sz - 1]
+        return self._buff_encoded[self._buff_len - 1]
 
     def _encode_hist(self) -> Tensor:
-        if self._hist_sz <= 0:
+        if self._hist_len <= 0:
             bsz, dim = self._hist.size(1), self.history_guard.size(0)
             return self.history_guard.unsqueeze(0).expand(bsz, dim)
         # shape: (bsz, hdim)
-        return self._hist_encoded[self._hist_sz - 1]
+        return self._hist_encoded[self._hist_len - 1]
 
     def _encode_stack(self) -> Tensor:
         if not self._stack:
