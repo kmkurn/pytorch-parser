@@ -92,11 +92,12 @@ class DiscRNNG(nn.Module):
 
     def _init_buff(self, winputs: Tensor, ntinputs: Tensor) -> None:
         self._buff = rearrange(winputs, 'bsz slen wdim -> slen bsz wdim')
-        tmp = self._buff.flip([0])  # reverse sequence
-        self._buff_encoded, _ = self.buffer_encoder(tmp)  # precompute encoding
+        self._buff = self._buff.flip([0])  # reverse sequence
+        self._buff_encoded, _ = self.buffer_encoder(self._buff)  # precompute encoding
         self._buff_len = self._buff.size(0)
 
         self._ntbuff = rearrange(ntinputs, 'bsz ntlen ntdim -> ntlen bsz ntdim')
+        self._ntbuff = self._ntbuff.flip([0])  # reverse sequence
         self._ntbuff_len = self._ntbuff.size(0)
 
     def _init_hist(self, inputs: Tensor) -> None:
@@ -125,7 +126,7 @@ class DiscRNNG(nn.Module):
 
     def _shift(self) -> None:
         # shape: (bsz, wdim)
-        inputs = self._buff[-self._buff_len]
+        inputs = self._buff[self._buff_len - 1]
         # shape: (bsz, sdim)
         outputs = self.buffer2stack_proj(inputs)
 
@@ -135,7 +136,7 @@ class DiscRNNG(nn.Module):
 
     def _push_nt(self) -> None:
         # shape: (bsz, ntdim)
-        inputs = self._ntbuff[-self._ntbuff_len]
+        inputs = self._ntbuff[self._ntbuff_len - 1]
         # shape: (bsz, sdim)
         outputs = self.nt2stack_proj(inputs)
 
