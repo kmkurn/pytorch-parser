@@ -18,7 +18,6 @@ __version__ = '0.0.0'
 from typing import Mapping
 
 from einops import rearrange
-from einops.layers.torch import Rearrange
 from torch import LongTensor, Tensor
 import torch
 import torch.nn as nn
@@ -46,20 +45,12 @@ class DiscRNNG(nn.Module):
     ) -> None:
         super().__init__()
         self.action2nt = action2nt
-        self.word_embedder = nn.Sequential(
-            word_embedding,
-            nn.Dropout2d(word_dropout),  # drop some words entirely
-        )
-        self.nt_embedder = nn.Sequential(
-            Rearrange('n -> () n'),
-            nt_embedding,
-            nn.Dropout2d(nt_dropout),  # drop some NTs entirely
-            Rearrange('d n dim -> (d n) dim'),  # d==1
-        )
-        self.action_embedder = nn.Sequential(
-            action_embedding,
-            nn.Dropout2d(action_dropout),  # drop some actions entirely
-        )
+        self.word_embedding = word_embedding
+        self.word_dropout = nn.Dropout2d(word_dropout)
+        self.nt_embedding = nt_embedding
+        self.nt_dropout = nn.Dropout2d(nt_dropout)
+        self.action_embedding = action_embedding
+        self.action_dropout = nn.Dropout2d(action_dropout)
         self.buffer2stack_proj = nn.Linear(word_embedding.embedding_dim, stack_size)
         self.nt2stack_proj = nn.Linear(nt_embedding.embedding_dim, stack_size)
         self.subtree_encoders = nn.ModuleList([
@@ -93,8 +84,10 @@ class DiscRNNG(nn.Module):
             nn.init.uniform_(p, -0.01, 0.01)
 
     def forward(self, words: LongTensor, actions: LongTensor) -> Tensor:
-        winputs = rearrange(self.word_embedder(words), 'bsz slen wdim -> slen bsz wdim')
-        ainputs = rearrange(self.action_embedder(actions), 'bsz alen adim -> alen bsz adim')
+        winputs = self.word_dropout(self.word_embedding(words))
+        winputs = rearrange(winputs, 'bsz slen wdim -> slen bsz wdim')
+        ainputs = self.action_dropout(self.action_embedding(actions))
+        ainputs = rearrange(ainputs, 'bsz alen adim -> alen bsz adim')
 
         # Init word buffer
         buff = winputs.flip([0])  # reverse sequence
@@ -193,9 +186,9 @@ class DiscRNNG(nn.Module):
                 for i in range(bsz):
                     inputs[i] = self.action2nt[a[i].item()]
                 # shape: (bsz, ntdim)
-                outputs = self.nt_embedder(inputs)
+                inputs = self.nt_dropout(self.nt_embedding(inputs.unsqueeze(0))).squeeze(0)
                 # shape: (bsz, sdim)
-                outputs = self.nt2stack_proj(outputs)
+                outputs = self.nt2stack_proj(inputs)
                 stack.append(outputs)
                 stack_open_nt.append(True)
 
