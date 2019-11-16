@@ -8,10 +8,10 @@ class TestForward:
     def test_ok(self):
         n_words, n_nonterms, n_actions = 10, 11, 12
         word_size, act_size, nt_size = 13, 14, 15
-        word_embedder = nn.Embedding(n_words, word_size)
-        nt_embedder = nn.Embedding(n_nonterms, nt_size)
-        action_embedder = nn.Embedding(n_actions, act_size)
-        parser = DiscRNNG(word_embedder, nt_embedder, action_embedder)
+        word_embedding = nn.Embedding(n_words, word_size)
+        nt_embedding = nn.Embedding(n_nonterms, nt_size)
+        action_embedding = nn.Embedding(n_actions, act_size)
+        parser = DiscRNNG(word_embedding, nt_embedding, action_embedding)
 
         # (S (NP john) (VP loves (NP mary)))
         # (S (NP john) (VP is (ADJP cool)))

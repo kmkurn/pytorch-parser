@@ -18,6 +18,7 @@ __version__ = '0.0.0'
 from typing import List
 
 from einops import rearrange
+from einops.layers.torch import Rearrange
 from torch import LongTensor, Tensor
 import torch
 import torch.nn as nn
@@ -30,20 +31,32 @@ class DiscRNNG(nn.Module):
 
     def __init__(
             self,
-            word_embedder: nn.Embedding,
-            nt_embedder: nn.Embedding,
-            action_embedder: nn.Embedding,
+            word_embedding: nn.Embedding,
+            nt_embedding: nn.Embedding,
+            action_embedding: nn.Embedding,
             *,
             stack_size: int = 128,
             n_layers: int = 2,
             hidden_size: int = 128,
     ) -> None:
         super().__init__()
-        self.word_embedder = word_embedder
-        self.nt_embedder = nt_embedder
-        self.action_embedder = action_embedder
-        self.buffer2stack_proj = nn.Linear(word_embedder.embedding_dim, stack_size)
-        self.nt2stack_proj = nn.Linear(nt_embedder.embedding_dim, stack_size)
+        self.word_embedder = nn.Sequential(
+            word_embedding,
+            Rearrange('bsz slen wdim -> slen bsz wdim'),
+            nn.Dropout2d(0.5),
+        )
+        self.nt_embedder = nn.Sequential(
+            nt_embedding,
+            Rearrange('bsz ntlen ntdim -> ntlen bsz ntdim'),
+            nn.Dropout2d(0.2),
+        )
+        self.action_embedder = nn.Sequential(
+            action_embedding,
+            Rearrange('bsz alen adim -> alen bsz adim'),
+            nn.Dropout2d(0.5),
+        )
+        self.buffer2stack_proj = nn.Linear(word_embedding.embedding_dim, stack_size)
+        self.nt2stack_proj = nn.Linear(nt_embedding.embedding_dim, stack_size)
         self.subtree_encoders = nn.ModuleList([
             nn.LSTM(stack_size, stack_size, num_layers=n_layers),
             nn.LSTM(stack_size, stack_size, num_layers=n_layers)
@@ -55,16 +68,16 @@ class DiscRNNG(nn.Module):
         )
         self.buffer_guard = nn.Parameter(torch.empty(hidden_size))
         self.buffer_encoder = nn.LSTM(
-            word_embedder.embedding_dim, hidden_size, num_layers=n_layers)
+            word_embedding.embedding_dim, hidden_size, num_layers=n_layers)
         self.history_guard = nn.Parameter(torch.empty(hidden_size))
         self.history_encoder = nn.LSTM(
-            action_embedder.embedding_dim, hidden_size, num_layers=n_layers)
+            action_embedding.embedding_dim, hidden_size, num_layers=n_layers)
         self.stack_guard = nn.Parameter(torch.empty(hidden_size))
         self.stack_encoder = nn.LSTM(stack_size, hidden_size, num_layers=n_layers)
         self.action_proj = nn.Sequential(
             nn.Linear(3 * hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, action_embedder.num_embeddings),
+            nn.Linear(hidden_size, action_embedding.num_embeddings),
         )
         self.reset_parameters()
 
@@ -93,18 +106,18 @@ class DiscRNNG(nn.Module):
         return loss
 
     def _init_buff(self, winputs: Tensor, ntinputs: Tensor) -> None:
-        self._buff = rearrange(winputs, 'bsz slen wdim -> slen bsz wdim')
-        self._buff = self._buff.flip([0])  # reverse sequence
+        # shape: (slen, bsz, wdim)
+        self._buff = winputs.flip([0])  # reverse sequence
         self._buff_encoded, _ = self.buffer_encoder(self._buff)  # precompute encoding
         self._buff_len = self._buff.size(0)
 
-        self._ntbuff = rearrange(ntinputs, 'bsz ntlen ntdim -> ntlen bsz ntdim')
-        self._ntbuff = self._ntbuff.flip([0])  # reverse sequence
+        # shape: (ntlen, bsz, ntdim)
+        self._ntbuff = ntinputs.flip([0])  # reverse sequence
         self._ntbuff_len = self._ntbuff.size(0)
 
     def _init_hist(self, inputs: Tensor) -> None:
-        self._hist = rearrange(inputs, 'bsz alen adim -> alen bsz adim')
-        self._hist_encoded, _ = self.history_encoder(self._hist)  # precompute encoding
+        # shape: (alen, bsz, adim)
+        self._hist_encoded, _ = self.history_encoder(inputs)  # precompute encoding
         self._hist_len = 0
 
     def _init_stack(self) -> None:
@@ -155,7 +168,7 @@ class DiscRNNG(nn.Module):
 
     def _encode_hist(self) -> Tensor:
         if self._hist_len <= 0:
-            bsz, dim = self._hist.size(1), self.history_guard.size(0)
+            bsz, dim = self._hist_encoded.size(1), self.history_guard.size(0)
             return self.history_guard.unsqueeze(0).expand(bsz, dim)
         # shape: (bsz, hdim)
         return self._hist_encoded[self._hist_len - 1]
