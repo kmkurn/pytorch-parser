@@ -27,7 +27,6 @@ import torch.nn.functional as F
 class DiscRNNG(nn.Module):
     REDUCE = 0
     SHIFT = 1
-    MAX_OPEN = 100
 
     def __init__(
             self,
@@ -43,6 +42,7 @@ class DiscRNNG(nn.Module):
             nt_dropout: float = 0.2,
             action_dropout: float = 0.3,
             dropout: float = 0.5,
+            max_open_nt: int = 100,
     ) -> None:
         super().__init__()
         self.action2nt = action2nt
@@ -78,6 +78,7 @@ class DiscRNNG(nn.Module):
             nn.Linear(hidden_size, action_embedding.num_embeddings),
         )
         self.dropout = nn.Dropout(dropout)
+        self.max_open_nt = max_open_nt
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -253,7 +254,7 @@ class DiscRNNG(nn.Module):
                 # Constrain invalid actions
                 acts = torch.arange(self.n_actions).to(scores.device)
                 nt_mask = (acts != self.SHIFT) & (acts != self.REDUCE)
-                if buff_len <= 0 or n_open >= self.MAX_OPEN:
+                if buff_len <= 0 or n_open >= self.max_open_nt:
                     scores.masked_fill_(nt_mask, float('-inf'))
                 if buff_len <= 0 or n_open < 1:
                     scores[self.SHIFT] = float('-inf')

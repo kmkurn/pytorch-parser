@@ -48,7 +48,7 @@ def test_decode():
     # vocab(NT): S=0 NP=1 VP=2 ADJP=3
     # vocab(action): R=0 SH=1 NT(S)=2 NT(NP)=3 NT(VP)=4 NT(ADJP)=5
     action2nt = {2: 0, 3: 1, 4: 2, 5: 3}
-    parser = DiscRNNG(word_embedding, nt_embedding, action_embedding, action2nt)
+    parser = DiscRNNG(word_embedding, nt_embedding, action_embedding, action2nt, max_open_nt=5)
     words = torch.randint(n_words, (2, 3))
 
     pred_actions = parser.decode(words)
