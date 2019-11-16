@@ -33,6 +33,7 @@ class DiscRNNG(nn.Module):
             word_embedder: nn.Embedding,
             nt_embedder: nn.Embedding,
             action_embedder: nn.Embedding,
+            *,
             stack_size: int = 128,
             n_layers: int = 2,
             hidden_size: int = 128,
