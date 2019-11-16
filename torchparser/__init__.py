@@ -146,6 +146,7 @@ class DiscRNNG(nn.Module):
                 assert a.eq(self.REDUCE).all(), 'actions must be REDUCE'
                 children = []
                 while stack_open_nt and not stack_open_nt[-1]:
+                    assert stack
                     children.append(stack.pop())
                     stack_open_nt.pop()
                 assert stack_open_nt, 'cannot REDUCE because no open nonterm'
