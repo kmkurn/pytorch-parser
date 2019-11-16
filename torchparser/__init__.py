@@ -161,6 +161,7 @@ class DiscRNNG(nn.Module):
 
                 stack.append(outputs)
                 stack_open_nt.append(False)
+
             elif a[0].item() == self.SHIFT:
                 assert a.eq(self.SHIFT).all(), 'actions must be SHIFT'
                 inputs = buff[buff_len - 1]
@@ -168,6 +169,7 @@ class DiscRNNG(nn.Module):
                 stack.append(outputs)
                 stack_open_nt.append(False)
                 buff_len -= 1
+
             else:
                 inputs = torch.empty_like(a)
                 for i in range(bsz):
