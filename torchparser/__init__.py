@@ -15,8 +15,6 @@
 
 __version__ = '0.0.0'
 
-from typing import List
-
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from torch import LongTensor, Tensor
@@ -92,122 +90,117 @@ class DiscRNNG(nn.Module):
             nn.init.uniform_(p, -0.01, 0.01)
 
     def forward(self, words: LongTensor, nonterms: LongTensor, actions: LongTensor) -> Tensor:
-        self._init_buff(self.word_embedder(words), self.nt_embedder(nonterms))
-        self._init_hist(self.action_embedder(actions))
-        self._init_stack()
+        # shape: (slen, bsz, wdim)
+        winputs = self.word_embedder(words)
+        # shape: (ntlen, bsz, ntdim)
+        ntinputs = self.nt_embedder(nonterms)
+        # shape: (alen, bsz, adim)
+        ainputs = self.action_embedder(actions)
 
-        loss = 0.
+        # Init word buffer
+        buff = winputs.flip([0])  # reverse sequence
+        # shape: (slen, bsz, hdim)
+        buff_encoded, _ = self.buffer_encoder(buff)  # precompute encoding
+        buff_len = buff.size(0)
+
+        # Init NT buffer
+        ntbuff = ntinputs.flip([0])  # reverse sequence
+        ntbuff_len = ntbuff.size(0)
+
+        # Init action history
+        # shape: (alen, bsz, hdim)
+        hist_encoded, _ = self.history_encoder(ainputs)  # precompute encoding
+        hist_len = 0
+
+        # Init stack
+        stack = []
+        stack_open_nt = []
+
+        loss, bsz = 0., buff.size(1)
         for a in rearrange(actions, 'bsz alen -> alen bsz'):
-            loss += F.cross_entropy(self._get_act_scores(), a)
+            # Get word buffer state
+            if buff_len <= 0:
+                dim = self.buffer_guard.size(0)
+                buff_state = self.buffer_guard.unsqueeze(0).expand(bsz, dim)
+            else:
+                buff_state = buff_encoded[buff_len - 1]
+
+            # Get action history state
+            if hist_len <= 0:
+                dim = self.history_guard.size(0)
+                hist_state = self.history_guard.unsqueeze(0).expand(bsz, dim)
+            else:
+                hist_state = hist_encoded[hist_len - 1]
+
+            # Get stack state
+            if not stack:
+                dim = self.stack_guard.size(0)
+                stack_state = self.stack_guard.unsqueeze(0).expand(bsz, dim)
+            else:
+                # shape: (len, bsz, sdim)
+                inputs = torch.stack(stack)
+                # shape: (len, bsz, hdim)
+                outputs, _ = self.stack_encoder(inputs)
+                # shape: (bsz, hdim)
+                stack_state = outputs[-1]
+
+            # Compute action scores
+            # shape: (bsz, 3*hdim)
+            parser_state = torch.cat([buff_state, hist_state, stack_state], dim=-1)
+            # shape: (bsz, 3*hdim)
+            parser_state = self.dropout(parser_state)
+            # shape: (bsz, n_actions)
+            scores = self.action_proj(parser_state)
+
+            loss += F.cross_entropy(scores, a)
+
             if a[0].item() == self.REDUCE:
                 assert a.eq(self.REDUCE).all(), 'actions must be REDUCE'
-                self._reduce()
+                children = []
+                while stack_open_nt and not stack_open_nt[-1]:
+                    children.append(stack.pop())
+                    stack_open_nt.pop()
+                assert stack_open_nt, 'cannot REDUCE because no open nonterm'
+                parent = stack.pop()
+                stack_open_nt.pop()
+
+                # Encode subtree
+                inputs_fwd, inputs_bwd = [parent], [parent]
+                inputs_fwd.extend(children)
+                inputs_bwd.extend(reversed(children))
+                # shape: (len, bsz, sdim)
+                inputs_fwd = torch.stack(inputs_fwd)
+                # shape: (len, bsz, sdim)
+                inputs_bwd = torch.stack(inputs_bwd)
+                outputs = []
+                for inputs, enc in zip([inputs_fwd, inputs_bwd], self.subtree_encoders):
+                    out, _ = enc(inputs)
+                    outputs.append(out[-1])
+                # shape: (bsz, 2*sdim)
+                outputs = torch.cat(outputs, dim=-1)
+                # shape: (bsz, sdim)
+                outputs = self.subtree_proj(outputs)
+
+                stack.append(outputs)
+                stack_open_nt.append(False)
             elif a[0].item() == self.SHIFT:
                 assert a.eq(self.SHIFT).all(), 'actions must be SHIFT'
-                self._shift()
+                # shape: (bsz, wdim)
+                inputs = buff[buff_len - 1]
+                # shape: (bsz, sdim)
+                outputs = self.buffer2stack_proj(inputs)
+                stack.append(outputs)
+                stack_open_nt.append(False)
+                buff_len -= 1
             else:
-                self._push_nt()
-            self._hist_len += 1
+                # shape: (bsz, ntdim)
+                inputs = ntbuff[ntbuff_len - 1]
+                # shape: (bsz, sdim)
+                outputs = self.nt2stack_proj(inputs)
+                stack.append(outputs)
+                stack_open_nt.append(True)
+                ntbuff_len -= 1
+
+            hist_len += 1
 
         return loss
-
-    def _init_buff(self, winputs: Tensor, ntinputs: Tensor) -> None:
-        # shape: (slen, bsz, wdim)
-        self._buff = winputs.flip([0])  # reverse sequence
-        self._buff_encoded, _ = self.buffer_encoder(self._buff)  # precompute encoding
-        self._buff_len = self._buff.size(0)
-
-        # shape: (ntlen, bsz, ntdim)
-        self._ntbuff = ntinputs.flip([0])  # reverse sequence
-        self._ntbuff_len = self._ntbuff.size(0)
-
-    def _init_hist(self, inputs: Tensor) -> None:
-        # shape: (alen, bsz, adim)
-        self._hist_encoded, _ = self.history_encoder(inputs)  # precompute encoding
-        self._hist_len = 0
-
-    def _init_stack(self) -> None:
-        self._stack = []
-        self._stack_open_nt = []
-
-    def _get_act_scores(self) -> Tensor:
-        inputs = [self._encode_buff(), self._encode_hist(), self._encode_stack()]
-        inputs = [self.dropout(x) for x in inputs]
-        return self.action_proj(torch.cat(inputs, dim=-1))
-
-    def _reduce(self) -> None:
-        children = []
-        while self._stack_open_nt and not self._stack_open_nt[-1]:
-            children.append(self._stack.pop())
-            self._stack_open_nt.pop()
-        assert self._stack_open_nt, 'cannot REDUCE because no open nonterm'
-        parent = self._stack.pop()
-        self._stack_open_nt.pop()
-        self._stack.append(self._encode_subtree(parent, children))
-        self._stack_open_nt.append(False)
-
-    def _shift(self) -> None:
-        # shape: (bsz, wdim)
-        inputs = self._buff[self._buff_len - 1]
-        # shape: (bsz, sdim)
-        outputs = self.buffer2stack_proj(inputs)
-
-        self._stack.append(outputs)
-        self._stack_open_nt.append(False)
-        self._buff_len -= 1
-
-    def _push_nt(self) -> None:
-        # shape: (bsz, ntdim)
-        inputs = self._ntbuff[self._ntbuff_len - 1]
-        # shape: (bsz, sdim)
-        outputs = self.nt2stack_proj(inputs)
-
-        self._stack.append(outputs)
-        self._stack_open_nt.append(True)
-        self._ntbuff_len -= 1
-
-    def _encode_buff(self) -> Tensor:
-        if self._buff_len <= 0:
-            bsz, dim = self._buff.size(1), self.buffer_guard.size(0)
-            return self.buffer_guard.unsqueeze(0).expand(bsz, dim)
-        # shape: (bsz, hdim)
-        return self._buff_encoded[self._buff_len - 1]
-
-    def _encode_hist(self) -> Tensor:
-        if self._hist_len <= 0:
-            bsz, dim = self._hist_encoded.size(1), self.history_guard.size(0)
-            return self.history_guard.unsqueeze(0).expand(bsz, dim)
-        # shape: (bsz, hdim)
-        return self._hist_encoded[self._hist_len - 1]
-
-    def _encode_stack(self) -> Tensor:
-        if not self._stack:
-            bsz, dim = self._buff.size(1), self.stack_guard.size(0)
-            return self.stack_guard.unsqueeze(0).expand(bsz, dim)
-
-        # shape: (len, bsz, sdim)
-        inputs = torch.stack(self._stack)
-        # shape: (len, bsz, hdim)
-        outputs, _ = self.stack_encoder(inputs)
-        # shape: (bsz, hdim)
-        return outputs[-1]
-
-    def _encode_subtree(self, parent: Tensor, children: List[Tensor]) -> Tensor:
-        inputs_fwd, inputs_bwd = [parent], [parent]
-        inputs_fwd.extend(children)
-        inputs_bwd.extend(reversed(children))
-
-        # shape: (len, bsz, sdim)
-        inputs_fwd = torch.stack(inputs_fwd)
-        # shape: (len, bsz, sdim)
-        inputs_bwd = torch.stack(inputs_bwd)
-
-        outputs = []
-        for inputs, enc in zip([inputs_fwd, inputs_bwd], self.subtree_encoders):
-            out, _ = enc(inputs)
-            outputs.append(out[-1])
-
-        # shape: (bsz, 2*sdim)
-        outputs = torch.cat(outputs, dim=-1)
-        # shape: (bsz, sdim)
-        return self.subtree_proj(outputs)
