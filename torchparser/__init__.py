@@ -41,6 +41,7 @@ class DiscRNNG(nn.Module):
             word_dropout: float = 0.5,
             nt_dropout: float = 0.2,
             action_dropout: float = 0.3,
+            dropout: float = 0.5,
     ) -> None:
         super().__init__()
         self.word_embedder = nn.Sequential(
@@ -61,8 +62,8 @@ class DiscRNNG(nn.Module):
         self.buffer2stack_proj = nn.Linear(word_embedding.embedding_dim, stack_size)
         self.nt2stack_proj = nn.Linear(nt_embedding.embedding_dim, stack_size)
         self.subtree_encoders = nn.ModuleList([
-            nn.LSTM(stack_size, stack_size, num_layers=n_layers),
-            nn.LSTM(stack_size, stack_size, num_layers=n_layers)
+            nn.LSTM(stack_size, stack_size, num_layers=n_layers, dropout=dropout),
+            nn.LSTM(stack_size, stack_size, num_layers=n_layers, dropout=dropout)
         ])
         self.subtree_proj = nn.Sequential(
             nn.Linear(2 * stack_size, stack_size),
@@ -71,17 +72,19 @@ class DiscRNNG(nn.Module):
         )
         self.buffer_guard = nn.Parameter(torch.empty(hidden_size))
         self.buffer_encoder = nn.LSTM(
-            word_embedding.embedding_dim, hidden_size, num_layers=n_layers)
+            word_embedding.embedding_dim, hidden_size, num_layers=n_layers, dropout=dropout)
         self.history_guard = nn.Parameter(torch.empty(hidden_size))
         self.history_encoder = nn.LSTM(
-            action_embedding.embedding_dim, hidden_size, num_layers=n_layers)
+            action_embedding.embedding_dim, hidden_size, num_layers=n_layers, dropout=dropout)
         self.stack_guard = nn.Parameter(torch.empty(hidden_size))
-        self.stack_encoder = nn.LSTM(stack_size, hidden_size, num_layers=n_layers)
+        self.stack_encoder = nn.LSTM(
+            stack_size, hidden_size, num_layers=n_layers, dropout=dropout)
         self.action_proj = nn.Sequential(
             nn.Linear(3 * hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, action_embedding.num_embeddings),
         )
+        self.dropout = nn.Dropout(dropout)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -128,8 +131,9 @@ class DiscRNNG(nn.Module):
         self._stack_open_nt = []
 
     def _get_act_scores(self) -> Tensor:
-        x = torch.cat([self._encode_buff(), self._encode_hist(), self._encode_stack()], dim=-1)
-        return self.action_proj(x)
+        inputs = [self._encode_buff(), self._encode_hist(), self._encode_stack()]
+        inputs = [self.dropout(x) for x in inputs]
+        return self.action_proj(torch.cat(inputs, dim=-1))
 
     def _reduce(self) -> None:
         children = []
