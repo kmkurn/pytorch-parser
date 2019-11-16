@@ -66,7 +66,7 @@ class DiscRNNG(nn.Module):
             nn.LSTM(stack_size, stack_size, num_layers=n_layers, dropout=dropout),
             nn.LSTM(stack_size, stack_size, num_layers=n_layers, dropout=dropout)
         ])
-        self.subtree_proj = nn.Sequential(
+        self.subtree_mlp = nn.Sequential(
             nn.Linear(2 * stack_size, stack_size),
             nn.ReLU(),
             nn.Linear(stack_size, stack_size),
@@ -80,7 +80,7 @@ class DiscRNNG(nn.Module):
         self.stack_guard = nn.Parameter(torch.empty(hidden_size))
         self.stack_encoder = nn.LSTM(
             stack_size, hidden_size, num_layers=n_layers, dropout=dropout)
-        self.action_proj = nn.Sequential(
+        self.action_mlp = nn.Sequential(
             nn.Linear(3 * hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, action_embedding.num_embeddings),
@@ -145,7 +145,7 @@ class DiscRNNG(nn.Module):
             # shape: (bsz, 3*hdim)
             parser_state = self.dropout(parser_state)
             # shape: (bsz, n_actions)
-            scores = self.action_proj(parser_state)
+            scores = self.action_mlp(parser_state)
 
             loss += F.cross_entropy(scores, a)
 
@@ -174,7 +174,7 @@ class DiscRNNG(nn.Module):
                 # shape: (bsz, 2*sdim)
                 outputs = torch.cat(outputs, dim=-1)
                 # shape: (bsz, sdim)
-                outputs = self.subtree_proj(outputs)
+                outputs = self.subtree_mlp(outputs)
 
                 stack.append(outputs)
                 stack_open_nt.append(False)
